@@ -1,0 +1,9 @@
+data/dataset-resized/
+data/*.zip
+checkpoints/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+.DS_Store
