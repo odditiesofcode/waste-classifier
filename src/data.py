@@ -33,7 +33,7 @@ def build_manifest(data_dir: Path = DATA_DIR) -> pd.DataFrame:
         for img_path in sorted(class_dir.iterdir()):
             if img_path.name.startswith("."):
                 continue
-            rows.append({"path": str(img_path), "class": class_dir.name})
+            rows.append({"path": str(img_path), "class": class_dir.name, "source": "trashnet"})
     return pd.DataFrame(rows)
 
 
@@ -49,9 +49,9 @@ def stratified_split(
     every split (stratification).
 
     Why stratify: with plain random splitting, a small class like
-    `trash` (137 images) could easily end up under- or over-represented
-    in the test set purely by chance, making our eval numbers noisy and
-    hard to trust run-to-run. Stratifying removes that source of noise.
+    `trash` could easily end up under- or over-represented in the test
+    set purely by chance, making our eval numbers noisy and hard to
+    trust run-to-run. Stratifying removes that source of noise.
     """
     assert abs(train_frac + val_frac + test_frac - 1.0) < 1e-9, \
         "split fractions must sum to 1"
@@ -62,7 +62,6 @@ def stratified_split(
         stratify=df["class"],
         random_state=seed,
     )
-    # split the remainder proportionally into val/test
     relative_val_frac = val_frac / (val_frac + test_frac)
     val_df, test_df = train_test_split(
         temp_df,
@@ -87,18 +86,12 @@ def compute_class_weights(df: pd.DataFrame, split: str = "train") -> dict:
 
     Why train-only: val/test are meant to represent the real-world
     distribution we'll be evaluated against. If we computed weights from
-    the full dataset (or leaked val/test info into this calculation),
-    we'd be letting evaluation data influence training decisions —
-    a subtle form of data leakage.
-
-    These weights get passed to the loss function later so the model is
-    penalized more for getting `trash` wrong than for getting `paper`
-    wrong, counteracting the 4.3x imbalance we saw in EDA.
+    the full dataset, we'd be letting evaluation data influence training
+    decisions -- a subtle form of data leakage.
     """
     train_counts = df[df["split"] == split]["class"].value_counts()
     n_classes = len(train_counts)
     n_samples = train_counts.sum()
-    # standard inverse-frequency weighting, normalized so weights average to 1
     weights = n_samples / (n_classes * train_counts)
     return weights.to_dict()
 
@@ -110,11 +103,118 @@ def build_and_save_splits() -> pd.DataFrame:
     return split_df
 
 
+# --- RealWaste integration -------------------------------------------------
+#
+# RealWaste (UCI ML Repo, CC BY 4.0) is real-world landfill photos across
+# 9 material types. We're using it for two purposes: (1) mixed into
+# training to give the model exposure to messy, real-world lighting and
+# backgrounds it's never seen in TrashNet's clean studio photos, and
+# (2) a held-out chunk that NEVER enters training, used purely to
+# measure the studio-to-real-world generalization gap we flagged back
+# in the original EDA.
+
+REALWASTE_DIR = Path(__file__).parent.parent / "data" / "RealWaste"
+REAL_WORLD_HOLDOUT_PATH = Path(__file__).parent.parent / "data" / "real_world_holdout.csv"
+REALWASTE_HOLDOUT_FRAC = 0.30
+
+# RealWaste has 9 classes; we only have 6. Food Organics, Miscellaneous
+# Trash, Textile Trash, and Vegetation don't have a clean equivalent in
+# our original taxonomy, so they all fold into 'trash' -- consistent
+# with how TrashNet itself defines that class ("doesn't fit anywhere
+# else"), and it usefully adds real-world diversity to our weakest-sized
+# original class.
+REALWASTE_CLASS_MAP = {
+    "Cardboard": "cardboard",
+    "Glass": "glass",
+    "Metal": "metal",
+    "Paper": "paper",
+    "Plastic": "plastic",
+    "Food Organics": "trash",
+    "Miscellaneous Trash": "trash",
+    "Textile Trash": "trash",
+    "Vegetation": "trash",
+}
+
+
+def build_realwaste_manifest(data_dir: Path = REALWASTE_DIR) -> pd.DataFrame:
+    """Same shape as build_manifest(), but remaps RealWaste's 9 folder
+    names onto our 6-class taxonomy via REALWASTE_CLASS_MAP."""
+    rows = []
+    for class_dir in sorted(data_dir.iterdir()):
+        if not class_dir.is_dir():
+            continue
+        mapped_class = REALWASTE_CLASS_MAP.get(class_dir.name)
+        if mapped_class is None:
+            continue  # unrecognized folder name -- skip defensively rather than crash
+        for img_path in sorted(class_dir.iterdir()):
+            if img_path.name.startswith("."):
+                continue
+            rows.append({"path": str(img_path), "class": mapped_class, "source": "realwaste"})
+    return pd.DataFrame(rows)
+
+
+def reserve_real_world_holdout(
+    realwaste_df: pd.DataFrame,
+    holdout_frac: float = REALWASTE_HOLDOUT_FRAC,
+    seed: int = RANDOM_SEED,
+):
+    """
+    Split RealWaste into two non-overlapping pieces:
+
+      holdout    -- NEVER touched by training or validation, at all.
+                    This is what makes it a fair generalization test:
+                    we can evaluate BOTH the original TrashNet-only
+                    checkpoint and a new checkpoint against it and get
+                    an honest before/after comparison.
+      trainable  -- the remaining 70%, which gets folded into the
+                    normal train/val/test pipeline alongside TrashNet.
+
+    Stratified by class for the same reason as stratified_split: so the
+    holdout set isn't accidentally skewed toward one class by chance.
+    """
+    holdout_df, trainable_df = train_test_split(
+        realwaste_df,
+        train_size=holdout_frac,
+        stratify=realwaste_df["class"],
+        random_state=seed,
+    )
+    return holdout_df.reset_index(drop=True), trainable_df.reset_index(drop=True)
+
+
+def build_and_save_combined_splits() -> pd.DataFrame:
+    """
+    Full pipeline: TrashNet + (most of) RealWaste -> train/val/test,
+    with a pure RealWaste holdout saved separately.
+
+    Falls back to TrashNet-only behavior if RealWaste hasn't been
+    downloaded yet, so this stays runnable at every stage of the project.
+    """
+    trashnet_df = build_manifest()
+
+    if REALWASTE_DIR.exists():
+        realwaste_df = build_realwaste_manifest()
+        holdout_df, trainable_df = reserve_real_world_holdout(realwaste_df)
+        holdout_df.to_csv(REAL_WORLD_HOLDOUT_PATH, index=False)
+        combined_df = pd.concat([trashnet_df, trainable_df], ignore_index=True)
+    else:
+        print(f"Note: {REALWASTE_DIR} not found -- building TrashNet-only splits. "
+              f"Run scripts/download_realwaste.sh to include RealWaste.")
+        combined_df = trashnet_df
+
+    split_df = stratified_split(combined_df)
+    split_df.to_csv(SPLITS_PATH, index=False)
+    return split_df
+
+
 if __name__ == "__main__":
-    split_df = build_and_save_splits()
+    split_df = build_and_save_combined_splits()
 
     print("Split sizes:")
     print(split_df["split"].value_counts().to_string())
+
+    if "source" in split_df.columns:
+        print("\nSource breakdown per split:")
+        print(pd.crosstab(split_df["source"], split_df["split"]).to_string())
 
     print("\nClass balance within each split (should look similar across rows):")
     print(pd.crosstab(split_df["class"], split_df["split"], normalize="columns").round(3).to_string())
@@ -124,4 +224,9 @@ if __name__ == "__main__":
     for cls, w in sorted(weights.items()):
         print(f"  {cls:<10} {w:.3f}")
 
-    print(f"\nSaved manifest+splits to {SPLITS_PATH}")
+    if REAL_WORLD_HOLDOUT_PATH.exists():
+        holdout_df = pd.read_csv(REAL_WORLD_HOLDOUT_PATH)
+        print(f"\nReal-world holdout set: {len(holdout_df)} images, never used in training/val/test")
+        print(holdout_df["class"].value_counts().to_string())
+
+    print(f"\nSaved splits to {SPLITS_PATH}")
