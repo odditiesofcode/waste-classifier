@@ -106,7 +106,7 @@ def test_real_dataset_manifest_matches_known_counts():
     }
 
 
-# --- RealWaste integration tests (Variant A: drop, don't merge) -----------
+# --- RealWaste integration tests (excluded classes, not merged into trash) -----------
 
 def test_realwaste_class_map_covers_all_nine_official_classes():
     """Regression test: if UCI ever adds/renames a class, or we typo a
@@ -128,11 +128,11 @@ def test_realwaste_class_map_kept_classes_match_our_six():
 
 
 def test_realwaste_class_map_drops_the_three_incompatible_classes():
-    """Pins down the Variant A decision explicitly: Food Organics,
-    Textile Trash, and Vegetation are deliberately excluded, not
-    silently folded into `trash`. If someone "fixes" this by mapping
-    them back in later, this test should force that to be a conscious,
-    visible change -- not an accidental one."""
+    """Pins down this decision explicitly: Food Organics, Textile
+    Trash, and Vegetation are deliberately excluded, not silently
+    folded into `trash`. If someone "fixes" this by mapping them back
+    in later, this test should force that to be a conscious, visible
+    change -- not an accidental one."""
     dropped = {k for k, v in REALWASTE_CLASS_MAP.items() if v is None}
     assert dropped == {"Food Organics", "Textile Trash", "Vegetation"}
 

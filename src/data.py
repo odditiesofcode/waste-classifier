@@ -104,28 +104,28 @@ REALWASTE_DIR = Path(__file__).parent.parent / "data" / "RealWaste"
 REAL_WORLD_HOLDOUT_PATH = Path(__file__).parent.parent / "data" / "real_world_holdout.csv"
 REALWASTE_HOLDOUT_FRAC = 0.30
 
-# RealWaste has 9 classes; we only have 6. DECISION (variant A, see
-# conversation/README): Cardboard/Glass/Metal/Paper/Plastic map directly
-# onto our existing classes. "Miscellaneous Trash" is close enough in
-# meaning to our TrashNet-defined `trash` ("doesn't fit anywhere else")
-# to merge in.
+# RealWaste has 9 classes; we only have 6. Cardboard/Glass/Metal/Paper/
+# Plastic map directly onto our existing classes. "Miscellaneous Trash"
+# is close enough in meaning to our TrashNet-defined `trash` ("doesn't
+# fit anywhere else") to merge in.
 #
-# Food Organics, Textile Trash, and Vegetation are deliberately DROPPED
+# Food Organics, Textile Trash, and Vegetation are deliberately EXCLUDED
 # (mapped to None, filtered out in build_realwaste_manifest) rather than
-# folded into `trash`. Why: merging them in ballooned `trash` from 5% to
-# 22% of the combined dataset, which flipped which classes the
-# loss-weighting treats as "rare" -- a real side effect worth avoiding
-# for now, since it would muddy the before/after comparison the
-# real-world holdout set exists to give us.
+# folded into `trash`. Reason: merging them in ballooned `trash` from 5%
+# to 22% of the combined dataset, which flipped which classes the
+# loss-weighting treats as "rare" -- a real side effect worth avoiding,
+# since it would muddy the before/after comparison the real-world
+# holdout set exists to give us.
 #
-# FUTURE WORK (variant C, deferred): split these into their own
-# `organic_other` class rather than dropping them -- more semantically
-# honest (compostable waste is a genuinely different disposal stream
-# than landfill trash) and keeps ~1,165 images we're currently
-# discarding. Deferred because it changes the model from 6 classes to
-# 7, which breaks direct comparison against the checkpoint we already
-# have and requires retraining from scratch rather than continuing to
-# build on current results.
+# POSSIBLE FUTURE IMPROVEMENT: rather than excluding these three classes,
+# they could become a new 7th class (e.g. `organic_other`). That would
+# be more semantically honest -- compostable waste is genuinely a
+# different disposal stream than landfill trash -- and would keep the
+# ~1,165 images currently being discarded. Not done here because it
+# would change the model's output from 6 classes to 7, breaking direct
+# comparison against the checkpoint already trained, and would require
+# retraining from scratch rather than continuing to build on current
+# results.
 REALWASTE_CLASS_MAP = {
     "Cardboard": "cardboard",
     "Glass": "glass",
@@ -151,7 +151,7 @@ def build_realwaste_manifest(data_dir: Path = REALWASTE_DIR) -> pd.DataFrame:
             continue  # unrecognized folder name -- skip defensively rather than crash
         mapped_class = REALWASTE_CLASS_MAP[class_dir.name]
         if mapped_class is None:
-            continue  # deliberately dropped class (variant A)
+            continue  # deliberately excluded class -- see REALWASTE_CLASS_MAP comment above
         for img_path in sorted(class_dir.iterdir()):
             if img_path.name.startswith("."):
                 continue
