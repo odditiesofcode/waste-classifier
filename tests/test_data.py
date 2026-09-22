@@ -23,8 +23,6 @@ from src.data import (
 
 @pytest.fixture
 def fake_manifest():
-    """A small synthetic manifest so tests run instantly and don't
-    depend on the real dataset being present."""
     rows = []
     class_counts = {"a": 100, "b": 60, "c": 10}
     for cls, n in class_counts.items():
@@ -35,10 +33,10 @@ def fake_manifest():
 
 @pytest.fixture
 def fake_realwaste_manifest():
-    """Synthetic RealWaste-shaped manifest (already class-mapped),
-    imbalanced like the real one, with a 'source' column."""
+    """Synthetic RealWaste-shaped manifest (already class-mapped, drops
+    already applied), imbalanced like the real one."""
     rows = []
-    class_counts = {"cardboard": 40, "glass": 30, "metal": 50, "trash": 80}
+    class_counts = {"cardboard": 40, "glass": 30, "metal": 50, "trash": 20}
     for cls, n in class_counts.items():
         for i in range(n):
             rows.append({"path": f"/fake_rw/{cls}/{i}.jpg", "class": cls, "source": "realwaste"})
@@ -108,12 +106,12 @@ def test_real_dataset_manifest_matches_known_counts():
     }
 
 
-# --- new: RealWaste integration tests --------------------------------------
+# --- RealWaste integration tests (Variant A: drop, don't merge) -----------
 
 def test_realwaste_class_map_covers_all_nine_official_classes():
     """Regression test: if UCI ever adds/renames a class, or we typo a
     key, we want a loud test failure -- not images silently getting
-    dropped during build_realwaste_manifest()."""
+    dropped during build_realwaste_manifest() for the wrong reason."""
     expected = {
         "Cardboard", "Glass", "Metal", "Paper", "Plastic",
         "Food Organics", "Miscellaneous Trash", "Textile Trash", "Vegetation",
@@ -121,18 +119,33 @@ def test_realwaste_class_map_covers_all_nine_official_classes():
     assert set(REALWASTE_CLASS_MAP.keys()) == expected
 
 
-def test_realwaste_class_map_only_produces_our_six_classes():
+def test_realwaste_class_map_kept_classes_match_our_six():
+    """Every non-dropped mapping must land on exactly our 6 classes --
+    no typos, no stray new class sneaking in."""
     our_classes = {"cardboard", "glass", "metal", "paper", "plastic", "trash"}
-    assert set(REALWASTE_CLASS_MAP.values()) == our_classes
+    kept_values = {v for v in REALWASTE_CLASS_MAP.values() if v is not None}
+    assert kept_values == our_classes
+
+
+def test_realwaste_class_map_drops_the_three_incompatible_classes():
+    """Pins down the Variant A decision explicitly: Food Organics,
+    Textile Trash, and Vegetation are deliberately excluded, not
+    silently folded into `trash`. If someone "fixes" this by mapping
+    them back in later, this test should force that to be a conscious,
+    visible change -- not an accidental one."""
+    dropped = {k for k, v in REALWASTE_CLASS_MAP.items() if v is None}
+    assert dropped == {"Food Organics", "Textile Trash", "Vegetation"}
+
+
+def test_realwaste_miscellaneous_trash_still_maps_to_trash():
+    """The one class we DO fold into `trash` -- worth its own explicit
+    assertion since it's easy to accidentally drop this one too."""
+    assert REALWASTE_CLASS_MAP["Miscellaneous Trash"] == "trash"
 
 
 def test_holdout_and_trainable_do_not_overlap(fake_realwaste_manifest):
-    """The single most important property: zero leakage between the
-    real-world holdout and anything used in training."""
     holdout_df, trainable_df = reserve_real_world_holdout(fake_realwaste_manifest)
-    holdout_paths = set(holdout_df["path"])
-    trainable_paths = set(trainable_df["path"])
-    assert holdout_paths.isdisjoint(trainable_paths)
+    assert set(holdout_df["path"]).isdisjoint(set(trainable_df["path"]))
 
 
 def test_holdout_covers_every_image_exactly_once(fake_realwaste_manifest):
@@ -147,8 +160,6 @@ def test_holdout_fraction_is_approximately_correct(fake_realwaste_manifest):
 
 
 def test_holdout_is_stratified_by_class(fake_realwaste_manifest):
-    """A holdout skewed toward one class (purely by chance) would make
-    our generalization-gap measurement noisy and untrustworthy."""
     holdout_df, _ = reserve_real_world_holdout(fake_realwaste_manifest)
     full_props = fake_realwaste_manifest["class"].value_counts(normalize=True)
     holdout_props = holdout_df["class"].value_counts(normalize=True)
@@ -157,8 +168,6 @@ def test_holdout_is_stratified_by_class(fake_realwaste_manifest):
 
 
 def test_holdout_split_is_reproducible(fake_realwaste_manifest):
-    """Same seed must give the same holdout every time -- otherwise
-    'never used in training' silently stops being true across reruns."""
     holdout_1, _ = reserve_real_world_holdout(fake_realwaste_manifest, seed=42)
     holdout_2, _ = reserve_real_world_holdout(fake_realwaste_manifest, seed=42)
     assert set(holdout_1["path"]) == set(holdout_2["path"])
